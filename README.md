@@ -1,349 +1,470 @@
-# Superstore Data Pipeline — PySpark ETL, Incremental Upsert & Deduplication
+# Superstore Data Pipeline — PySpark ETL & Data Processing
 
-A scalable and fault-tolerant **PySpark ETL pipeline** designed to process high-volume retail data, handle inconsistent and corrupted records, and maintain a reliable **single source of truth** through data validation, incremental processing, and deduplication.
-
----
-
-## 🚀 Project Overview
-
-This project demonstrates a production-oriented data engineering pipeline built with **PySpark** using a Bronze–Silver–Gold architecture.
-
-The pipeline focuses on:
-
-* Robust ingestion of raw CSV data
-* Fault-tolerant data validation
-* Data quality checks and quarantine handling
-* Incremental processing and deduplication
-* Last-record-wins upsert logic
-* Optimized Parquet storage
-* Partitioning and partition pruning
-* Preparing curated data for BI and analytics
+A PySpark-based data processing pipeline built using the **Superstore dataset**. The project demonstrates data ingestion, data type transformation, star schema-style data modeling, Parquet storage, data quality validation, incremental load and deduplication logic, and feature engineering using PySpark.
 
 ---
 
-## 🏗️ Pipeline Architecture
+##  Project Overview
+
+This project uses **PySpark** to process the Superstore CSV dataset and perform several data engineering operations, including:
+
+* CSV data ingestion
+* Data type conversion
+* Missing-value handling
+* Dimensional data modeling
+* Parquet data storage
+* Data quality validation
+* Incremental load simulation
+* Deduplication using Window Functions
+* Feature engineering
+
+---
+
+##  Technologies Used
+
+* Python
+* PySpark
+* Apache Spark
+* Spark SQL Functions
+* Parquet
+
+---
+
+##  Pipeline Workflow
 
 ```text
-                    Raw Superstore CSV
-                            │
-                            ▼
-                 ┌─────────────────────┐
-                 │    Bronze Layer     │
-                 │                     │
-                 │ • CSV Ingestion     │
-                 │ • Quote/Escape      │
-                 │   Handling          │
-                 └──────────┬──────────┘
-                            │
-                            ▼
-                 ┌─────────────────────┐
-                 │    Silver Layer     │
-                 │                     │
-                 │ • Data Validation   │
-                 │ • Type Casting     │
-                 │ • Business Rules   │
-                 │ • Quality Checks   │
-                 └───────┬───────┬─────┘
-                         │       │
-                  Valid Records  │ Invalid Records
-                         │       │
-                         ▼       ▼
-                ┌────────────┐ ┌──────────────┐
-                │ Gold Layer │ │  Quarantine  │
-                │            │ │    Layer     │
-                │ • Upsert   │ │ • Audit      │
-                │ • Dedup    │ │ • Validation │
-                └─────┬──────┘ └──────────────┘
-                      │
-                      ▼
-              ┌──────────────────┐
-              │ Apache Parquet   │
-              │                  │
-              │ • Partitioned    │
-              │ • Compressed     │
-              │ • Optimized      │
-              └────────┬─────────┘
-                       │
-                       ▼
-              ┌──────────────────┐
-              │ Analytics / BI   │
-              │                  │
-              │ Power BI /       │
-              │ Tableau          │
-              └──────────────────┘
+Superstore CSV
+      │
+      ▼
+Data Ingestion
+      │
+      ▼
+Data Type Transformation
+      │
+      ├── Order_Date → Date
+      └── Sales → Float
+      │
+      ▼
+Star Schema Data Modeling
+      │
+      ├── Customer Dimension
+      ├── Product Dimension
+      ├── Order Dimension
+      └── Geography Dimension
+      │
+      ▼
+Parquet Storage
+      │
+      ▼
+Data Quality Validation
+      │
+      ▼
+Incremental Load
+      │
+      ▼
+Deduplication
+      │
+      ▼
+Feature Engineering
 ```
 
 ---
 
-## 🥉 1. Advanced Data Ingestion — Bronze Layer
+# 1. Data Ingestion
 
-### Challenge
-
-Raw CSV files can contain inconsistent formatting, including commas and special characters within text fields. Without proper handling, these issues can cause **column shifting and data corruption**.
-
-### Solution
-
-Implemented a robust Spark CSV ingestion process with customized **quote and escape configurations** to correctly handle complex text fields such as product descriptions.
-
-### Outcome
-
-* Correctly parsed complex CSV records
-* Prevented column shifting
-* Preserved numeric and transactional data integrity
-* Created a reliable foundation for downstream processing
-
----
-
-## 🥈 2. Fault-Tolerant Data Validation — Silver Layer
-
-### Challenge
-
-Traditional data type casting can be brittle. A small number of malformed records in a large dataset can potentially cause failures during processing.
-
-### Solution
-
-Implemented **fault-tolerant data validation and casting** to ensure that individual bad records do not disrupt the entire pipeline.
-
-The validation framework identifies:
-
-* Malformed numeric values converted to `NULL`
-* Invalid date relationships, such as `Ship_Date < Order_Date`
-* Zero or negative `Sales` values
-* Other business-rule violations
-
-Each record is evaluated using an **`is_bad` validation flag**.
-
-### Data Quality Flow
-
-```text
-Raw Record
-    │
-    ▼
-Data Type Validation
-    │
-    ▼
-Business Rule Validation
-    │
-    ├───────────────┐
-    │               │
-    ▼               ▼
-Valid Record     Invalid Record
-    │               │
-    ▼               ▼
-Processing      Quarantine
-Layer           Layer
-```
-
-### Outcome
-
-Valid records continue through the pipeline, while invalid records are isolated in a **quarantine layer** for:
-
-* Auditing
-* Troubleshooting
-* Data-quality analysis
-* Potential remediation
-
----
-
-## 🥇 3. Incremental Upsert & Deduplication — Gold Layer
-
-### Challenge
-
-Retail data is often delivered in incremental batches where existing transactions may be updated.
-
-Simply appending each batch can result in:
-
-* Duplicate records
-* Incorrect aggregations
-* Double-counting
-* Inconsistent reporting
-
-### Solution
-
-Implemented a **last-record-wins incremental upsert strategy** using PySpark **Window Functions**.
-
-### Upsert Logic
-
-1. Create a composite business key using `Order_ID` and `Product_ID`.
-2. Partition records using the composite key.
-3. Sort records by `processing_timestamp` in descending order.
-4. Apply the `row_number()` window function.
-5. Retain only the latest version of each transaction.
-
-Example logic:
+The pipeline begins by creating a Spark session and reading the `superstore.csv` file into a Spark DataFrame.
 
 ```python
-Window.partitionBy(
-    "Order_ID",
-    "Product_ID"
-).orderBy(
-    col("processing_timestamp").desc()
+spark = SparkSession.builder.appName("Analyze").getOrCreate()
+
+df = spark.read.csv(
+    "superstore.csv",
+    header=True
 )
 ```
 
-Then:
+The CSV file is read with the first row treated as the column header.
+
+---
+
+# 2. Data Type Transformation
+
+The pipeline converts important columns into appropriate data types.
+
+### Order Date
+
+The `Order_Date` column is converted into a date data type:
 
 ```python
-row_number() == 1
+df = df.withColumn(
+    "Order_date",
+    F.col("Order_Date").cast("date")
+)
 ```
 
-is used to identify the most recent record.
+### Sales
 
-### Outcome
+The `Sales` column is converted into a floating-point data type:
 
-The Gold layer provides a **deduplicated and up-to-date dataset**, creating a reliable **single source of truth** for analytics and reporting.
+```python
+df = df.withColumn(
+    "sales",
+    F.col("Sales").cast("float")
+)
+```
+
+The resulting schema is then inspected using:
+
+```python
+df.printSchema()
+```
 
 ---
 
-## 💾 4. Storage & Query Optimization
+# 3. Star Schema Data Modeling
 
-### Challenge
+The project organizes the Superstore data into separate DataFrames representing customer, product, order, and geographical information.
 
-CSV is inefficient for large-scale analytical workloads because it does not provide columnar storage and often requires more data to be scanned during queries.
+## Customer Dimension
 
-### Solution
+The customer DataFrame contains:
 
-Converted processed data from CSV to **Apache Parquet** with **Snappy compression**.
+* `Customer_id`
+* `Customer_Name`
+* `Segment`
 
-### Key Optimizations
+Duplicate combinations are removed using `distinct()`.
 
-* **Columnar storage** for efficient data retrieval
-* **Snappy compression** to reduce storage footprint
-* **Partitioning by Region and Year**
-* **Partition pruning** to minimize unnecessary data scans
+```python
+dim_customer = df.select(
+    "Customer_id",
+    "Customer_Name",
+    "Segment"
+).distinct()
+```
 
-### Partition Structure
+---
+
+## Product Dimension
+
+The product DataFrame contains:
+
+* `Product_ID`
+* `Product_Name`
+* `Category`
+* `Sub_Category`
+
+```python
+dim_product = df.select(
+    "Product_ID",
+    "Product_Name",
+    "Category",
+    "Sub_Category"
+).distinct()
+```
+
+---
+
+## Order Dimension
+
+The order DataFrame contains order and transaction-related fields:
+
+* `Order_id`
+* `Order_date`
+* `Ship_Date`
+* `Ship_Mode`
+* `Product_ID`
+* `Customer_id`
+* `Postal_Code`
+* `Sales`
+* `Quantity`
+* `Discount`
+* `Profit`
+
+```python
+dim_order = df.select(
+    "Order_id",
+    "Order_date",
+    "Ship_Date",
+    "Ship_Mode",
+    "Product_ID",
+    "Customer_id",
+    "Postal_Code",
+    "Sales",
+    "Quantity",
+    "Discount",
+    "Profit"
+)
+```
+
+---
+
+## Geography Dimension
+
+The geography DataFrame contains:
+
+* `State`
+* `Country`
+* `City`
+* `Region`
+* `Postal_Code`
+
+Duplicate combinations are removed using `distinct()`.
+
+```python
+dim_geo = df.select(
+    "State",
+    "Country",
+    "City",
+    "Region",
+    "Postal_Code"
+).distinct()
+```
+
+---
+
+# 4. Parquet Storage
+
+The four DataFrames are written to Parquet files using overwrite mode.
+
+```python
+dim_customer.write.mode("overwrite").parquet(
+    "dim_customers.parquet"
+)
+
+dim_product.write.mode("overwrite").parquet(
+    "dim_products.parquet"
+)
+
+dim_order.write.mode("overwrite").parquet(
+    "dim_orders.parquet"
+)
+
+dim_geo.write.mode("overwrite").parquet(
+    "dim_geos.parquet"
+)
+```
+
+The resulting Parquet datasets are:
 
 ```text
-Gold/
-│
-├── Region=East/
-│   ├── Year=2024/
-│   └── Year=2025/
-│
-├── Region=West/
-│   ├── Year=2024/
-│   └── Year=2025/
-│
-├── Region=Central/
-│   ├── Year=2024/
-│   └── Year=2025/
-│
-└── Region=South/
-    ├── Year=2024/
-    └── Year=2025/
+dim_customers.parquet
+dim_products.parquet
+dim_orders.parquet
+dim_geos.parquet
 ```
 
-### Outcome
-
-The optimized storage layer improves query performance by reducing the amount of data that needs to be scanned, particularly for **regional and time-based analytics**.
-
-The curated dataset can then be consumed by BI tools such as **Power BI** and **Tableau**.
+The DataFrames are also displayed using `.show()` to inspect the generated results.
 
 ---
 
-## 🛠️ Technologies Used
+# 5. Data Quality & Validation
 
-| Category          | Technologies                 |
-| ----------------- | ---------------------------- |
-| Programming       | Python                       |
-| Data Processing   | PySpark, Apache Spark        |
-| Storage Format    | Apache Parquet               |
-| Compression       | Snappy                       |
-| Data Architecture | Bronze / Silver / Gold       |
-| Data Quality      | Validation Rules, Quarantine |
-| Transformation    | PySpark DataFrame API        |
-| Deduplication     | Window Functions             |
-| Analytics         | Power BI, Tableau            |
-| ETL               | PySpark                      |
+The project includes a validation step to identify records that contain invalid sales values or an invalid date relationship.
+
+A new `is_bad` column is created using the following conditions:
+
+* `Sales` is `NULL`
+* `Ship_Date` occurs before `Order_date`
+
+```python
+cleaned_df = df.withColumn(
+    "is_bad",
+    (F.col("sales").isNull()) |
+    (F.col("Ship_Date") < F.col("Order_date"))
+)
+```
+
+Valid records are then selected by filtering for records where `is_bad` is `False`.
+
+```python
+Valued_df = cleaned_df.filter(
+    F.col("is_bad") == False
+)
+```
+
+The resulting DataFrame is inspected using `printSchema()` and `show()`.
 
 ---
 
-## 📂 Project Structure
+# 6. Incremental Load & Deduplication
+
+The project demonstrates incremental load and deduplication logic using a processing timestamp.
+
+A `processing_time` column is added to the existing DataFrame:
+
+```python
+df = df.withColumn(
+    "processing_time",
+    F.current_timestamp()
+)
+```
+
+A subset of the existing data is used to simulate an existing dataset:
+
+```python
+existing_data = df.limit(100)
+```
+
+A smaller subset is then used to simulate a new batch. The processing time for the new batch is set to the following day:
+
+```python
+new_batch_df = existing_data.limit(10).withColumn(
+    "processing_time",
+    F.date_add(F.current_timestamp(), 1)
+)
+```
+
+The existing data and new batch are combined using `union()`:
+
+```python
+combined_df = existing_data.union(new_batch_df)
+```
+
+---
+
+## Deduplication Using Window Functions
+
+A Window specification is created by partitioning the data using:
+
+* `Order_id`
+* `Product_ID`
+
+Records are ordered by `processing_time` in descending order.
+
+```python
+window_spec = W.partitionBy(
+    "Order_id",
+    "Product_ID"
+).orderBy(
+    F.col("processing_time").desc()
+)
+```
+
+The `row_number()` function is then used to identify the latest record for each `Order_id` and `Product_ID` combination.
+
+```python
+upserted_df = (
+    combined_df
+    .withColumn(
+        "row_num",
+        F.row_number().over(window_spec)
+    )
+    .filter(F.col("row_num") == 1)
+    .drop("row_num")
+)
+```
+
+The final result displays the selected `Order_id`, `Product_ID`, and `processing_time` values.
+
+---
+
+# 7. Feature Engineering
+
+The project also includes a feature engineering step using Spark SQL functions.
+
+Several new columns are derived from the existing data.
+
+### Shipping Days
+
+Calculates the number of days between the order date and shipping date.
+
+```python
+Shipping_Days = datediff(Ship_Date, Order_Date)
+```
+
+### Order Month
+
+Extracts the month from the order date.
+
+```python
+Order_Month = month(Order_Date)
+```
+
+### Order Quarter
+
+Extracts the quarter from the order date.
+
+```python
+Order_Quarter = quarter(Order_Date)
+```
+
+### Profit Margin
+
+Calculates profit margin as a percentage:
+
+```python
+Profit_Margin = (Profit / Sales) * 100
+```
+
+### Is Late
+
+Creates a Boolean indicator based on shipping time.
+
+A shipment is marked as late when `Shipping_Days` is greater than 5.
+
+```python
+Is_Late = when(
+    Shipping_Days > 5,
+    True
+).otherwise(False)
+```
+
+The resulting DataFrame contains the newly derived features:
+
+```python
+enriched_df.select(
+    "Order_id",
+    "Shipping_Days",
+    "Profit_Margin",
+    "Is_Late"
+).show(5)
+```
+
+---
+
+#  Project Structure
 
 ```text
 Superstore-Data-Pipeline/
 │
-├── data/
-│   ├── raw/
-│   │   └── superstore.csv
-│   │
-│   ├── bronze/
-│   │
-│   ├── silver/
-│   │
-│   ├── gold/
-│   │
-│   └── quarantine/
-│
-├── notebooks/
-│   └── superstore_pipeline.ipynb
-│
-├── src/
-│   └── pipeline.py
-│
-├── README.md
-│
-└── requirements.txt
+├── superstore.csv
+├── <PySpark notebook/script>
+├── dim_customers.parquet
+├── dim_products.parquet
+├── dim_orders.parquet
+├── dim_geos.parquet
+└── README.md
 ```
 
 ---
 
-## 🔄 End-to-End Workflow
+#  Key PySpark Concepts Demonstrated
 
-```text
-Extract
-  ↓
-Raw CSV Ingestion
-  ↓
-Bronze Layer
-  ↓
-Schema & Data Validation
-  ↓
-Silver Layer
-  ↓
-Quarantine Invalid Records
-  ↓
-Incremental Upsert
-  ↓
-Deduplication
-  ↓
-Gold Layer
-  ↓
-Parquet + Snappy
-  ↓
-Partition by Region & Year
-  ↓
-Power BI / Tableau
-```
+This project demonstrates practical usage of:
+
+* SparkSession
+* Reading CSV files
+* DataFrame transformations
+* `withColumn()`
+* Data type casting
+* `fillna()`
+* `select()`
+* `distinct()`
+* `filter()`
+* `union()`
+* `current_timestamp()`
+* `date_add()`
+* Window Functions
+* `row_number()`
+* Date functions
+* Conditional expressions using `when()`
+* Feature engineering
+* Writing DataFrames to Parquet
+* Star schema-style data modeling
 
 ---
 
-## 🎯 Key Data Engineering Concepts Demonstrated
+##  Project Objective
 
-This project demonstrates practical experience with:
-
-* ETL pipeline development
-* PySpark DataFrame transformations
-* Bronze/Silver/Gold architecture
-* Schema handling
-* Fault-tolerant data processing
-* Data quality validation
-* Data quarantine patterns
-* Incremental data processing
-* Upsert logic
-* Window functions
-* Deduplication
-* Parquet optimization
-* Snappy compression
-* Partitioning
-* Partition pruning
-* Analytics-ready data modeling
-
----
-
-## 📌 Project Objective
-
-The primary objective of this project is to demonstrate how a **raw retail dataset can be transformed into a reliable, validated, deduplicated, and analytics-ready dataset** using modern data engineering practices with PySpark.
-
-The pipeline is designed with scalability, data quality, fault tolerance, and query performance in mind.
+The objective of this project is to demonstrate how **PySpark can be used to ingest, transform, validate, model, store, and enrich retail data** while applying common data engineering techniques such as dimensional modeling, incremental processing, deduplication, and feature engineering.
